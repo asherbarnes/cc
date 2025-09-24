@@ -15,39 +15,85 @@
   </form>
 
   <h2>Recommended Cards</h2>
-  <ul id="results"></ul>
+<table id="resultsTable" border="1" cellpadding="8" style="border-collapse:collapse;">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Cashback</th>
+      <th>APR</th>
+      <th>Annual Fee</th>
+      <th>Link</th>
+    </tr>
+  </thead>
+  <tbody id="results"></tbody>
+</table>
 
-  <script>
-    const form = document.getElementById('cardForm');
-    const results = document.getElementById('results');
+<script>
+  const form = document.getElementById('cardForm');
+  const results = document.getElementById('results');
 
-    form.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      results.innerHTML = '';
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    results.innerHTML = '';
 
-      const data = {
-        score: document.getElementById('score').value,
-        age: document.getElementById('age').value,
-        income: document.getElementById('income').value
-      };
+    const data = {
+      score: parseInt(document.getElementById('score').value || '0', 10),
+      age: parseInt(document.getElementById('age').value || '0', 10),
+      income: parseInt(document.getElementById('income').value || '0', 10)
+    };
 
+    try {
       const response = await fetch('http://127.0.0.1:5000/recommend', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
 
+      if (!response.ok) {
+        // try JSON first, then fallback to text
+        let errMsg = 'Request failed';
+        try {
+          const errJson = await response.json();
+          errMsg = errJson.error || JSON.stringify(errJson);
+        } catch {
+          try {
+            const txt = await response.text();
+            errMsg = txt || errMsg;
+          } catch {
+            // leave default errMsg
+          }
+        }
+        results.innerHTML = `<tr><td colspan="5">Error: ${errMsg}</td></tr>`;
+        return;
+      }
+
       const recommendations = await response.json();
-      if (recommendations.length === 0) {
-        results.innerHTML = '<li>No matching cards found</li>';
+      if (!Array.isArray(recommendations) || recommendations.length === 0) {
+        results.innerHTML = '<tr><td colspan="5">No matching cards found</td></tr>';
       } else {
         recommendations.forEach(card => {
-          const li = document.createElement('li');
-          li.innerHTML = `<a href="${card.ref}" target="_blank">${card.name}</a>`;
-          results.appendChild(li);
+          const cashback = card.cashback_min === card.cashback_max
+            ? `${card.cashback_min}%`
+            : `${card.cashback_min}% - ${card.cashback_max}%`;
+          const apr = card.apr_min === card.apr_max
+            ? `${card.apr_min}%`
+            : `${card.apr_min}% - ${card.apr_max}%`;
+          const annualFee = Number(card.annual_fee) === 0 ? 'None' : `$${card.annual_fee}`;
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${card.name}</td>
+            <td>${cashback}</td>
+            <td>${apr}</td>
+            <td>${annualFee}</td>
+            <td><a href="${card.ref}" target="_blank" rel="noopener">Apply</a></td>
+          `;
+          results.appendChild(tr);
         });
       }
-    });
-  </script>
+    } catch (err) {
+      results.innerHTML = `<tr><td colspan="5">Network error: ${err.message}</td></tr>`;
+    }
+  });
+</script>
 </body>
 </html>
