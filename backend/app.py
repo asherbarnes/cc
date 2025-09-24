@@ -1,29 +1,38 @@
+import sqlite3
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)  # allow frontend to call backend
 
-# Example credit card dataset
-cards = [
-    {"name": "Starter Credit Card", "min_score": 500, "min_income": 0, "age_req": 18, "ref": "https://example.com/starter"},
-    {"name": "Student Rewards Card", "min_score": 600, "min_income": 1000, "age_req": 18, "ref": "https://example.com/student"},
-    {"name": "Platinum Rewards Card", "min_score": 700, "min_income": 3000, "age_req": 21, "ref": "https://example.com/platinum"}
-]
+def get_db_connection():
+    conn = sqlite3.connect('cards.db')
+    conn.row_factory = sqlite3.Row
+    return conn
 
-@app.route('/recommend', methods=['POST'])
+@app.route('/')
+def home():
+    return "Flask backend is running!"
+
+@app.route('/recommend', methods=['GET', 'POST'])
 def recommend():
-    data = request.json
-    score = int(data.get("score", 0))
-    age = int(data.get("age", 0))
-    income = int(data.get("income", 0))
+    if request.method == 'POST':
+        data = request.json
+        score = int(data.get("score", 0))
+        age = int(data.get("age", 0))
+        income = int(data.get("income", 0))
 
-    recommendations = []
-    for card in cards:
-        if score >= card["min_score"] and income >= card["min_income"] and age >= card["age_req"]:
-            recommendations.append(card)
+        conn = get_db_connection()
+        cards = conn.execute(
+            'SELECT * FROM cards WHERE min_score <= ? AND min_income <= ? AND age_req <= ?',
+            (score, income, age)
+        ).fetchall()
+        conn.close()
 
-    return jsonify(recommendations)
-
+        recommendations = [dict(card) for card in cards]
+        return jsonify(recommendations)
+    else:
+        return jsonify({"message": "Send a POST request with score, age, and income."})
+    
 if __name__ == '__main__':
     app.run(debug=True)
