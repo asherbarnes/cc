@@ -17,7 +17,23 @@ def init_db():
             with sqlite3.connect(DB_PATH) as conn:
                 with open(SQL_SEED, 'r', encoding='utf-8') as f:
                     script = f.read()
-                conn.executescript(script)
+                try:
+                    conn.executescript(script)
+                except sqlite3.OperationalError as e:
+                    # if the seed refers to a column not present in the existing table,
+                    # attempt a targeted migration for the known 'rec_score' column and retry.
+                    msg = str(e).lower()
+                    if 'no column named rec_score' in msg:
+                        app.logger.info("Migration: adding missing 'rec_score' column to cards table")
+                        try:
+                            conn.execute("ALTER TABLE cards ADD COLUMN rec_score INTEGER DEFAULT NULL;")
+                            conn.executescript(script)
+                        except Exception:
+                            app.logger.exception("Retrying seed after adding column failed")
+                            raise
+                    else:
+                        # unknown operational error, re-raise so startup fails visibly
+                        raise
         else:
             if not os.path.exists(DB_PATH):
                 open(DB_PATH, 'a').close()
@@ -64,8 +80,60 @@ def recommend():
             except Exception:
                 pass
 
-        recommendations = []
+        # If no cards matched, return empty list quickly
+        if not cards:
+            return jsonify([])
+
+        # Prepare numeric values and compute mins/maxes for normalization
+        rec_values = []
+        fee_values = []
+        prepared = []
         for card in cards:
+            # Use rec_score if present otherwise fall back to min_score
+            rec = card["rec_score"] if card["rec_score"] is not None else card["min_score"]
+            fee = float(card["annual_fee"] or 0.0)
+            rec_values.append(rec)
+            fee_values.append(fee)
+            prepared.append({
+                "row": card,
+                "rec": float(rec),
+                "fee": fee
+            })
+
+        min_rec = min(rec_values) if rec_values else 0.0
+        max_rec = max(rec_values) if rec_values else 0.0
+        max_fee = max(fee_values) if fee_values else 0.0
+
+        # User-influenced factors (capped)
+        user_score_factor = min(max(score / 850.0, 0.0), 1.0)   # higher score => more weight on rec_score
+        income_factor = min(max(income / 150000.0, 0.0), 1.0)   # higher income => more weight on annual_fee
+
+        # Weights for combining components
+        SCORE_WEIGHT = 0.65
+        FEE_WEIGHT = 0.35
+
+        ranked = []
+        for p in prepared:
+            # normalized rec_score (0..1)
+            if max_rec > min_rec:
+                rec_norm = (p["rec"] - min_rec) / (max_rec - min_rec)
+            else:
+                rec_norm = 0.5  # neutral if no range
+
+            # normalized fee (0..1)
+            fee_norm = (p["fee"] / max_fee) if max_fee > 0 else 0.0
+
+            # final score: give rec_score more importance for users with higher credit scores,
+            # and give fee more importance for users with higher incomes.
+            final_score = (SCORE_WEIGHT * rec_norm * user_score_factor) + (FEE_WEIGHT * fee_norm * income_factor)
+
+            ranked.append((final_score, p["row"]))
+
+        # sort by final_score desc, break ties by better cashback_max then lower apr_min
+        ranked.sort(key=lambda t: (t[0], float(t[1]["cashback_max"] or 0.0), -float(t[1]["apr_min"] or 0.0)), reverse=True)
+
+        recommendations = []
+        for _, card in ranked:
             recommendations.append({
                 "name": card["name"],
                 "cashback_min": card["cashback_min"],
@@ -75,11 +143,11 @@ def recommend():
                 "annual_fee": card["annual_fee"],
                 "ref": card["ref"]
             })
+
         return jsonify(recommendations)
     else:
         return jsonify({"message": "Send a POST request with score, age, and income."})
 
-# ...existing code...
 if __name__ == '__main__':
     # bind explicitly to localhost and keep default port 5000
     app.run(host='127.0.0.1', debug=True)
